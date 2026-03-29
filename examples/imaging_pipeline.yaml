@@ -1,0 +1,105 @@
+# WATER Workflow: Medical Imaging Pipeline
+#
+# A generic multi-stage imaging workflow.  The containers here are
+# illustrative — swap in any OCI image that performs the same role.
+# WATER does not know or care what runs inside; it only handles
+# WHERE each step runs and HOW data moves between nodes.
+#
+# Intent:
+#   - Data contains Protected Health Information (PHI) → strict-local
+#   - Acceptable batch processing latency → batch
+#   - Step 3 (inference) requires a GPU node
+
+name: medical-imaging-pipeline
+version: "1.0"
+description: >
+  Multi-stage imaging workflow: ingest → preprocess → AI inference → report.
+  PHI never leaves the hospital network (strict-local intent).
+  Inference step is automatically routed to a GPU-capable edge node.
+
+intent:
+  privacy: strict-local    # hard disqualifier — cloud nodes removed before scoring
+  latency: batch
+  compute: gpu-required
+  tags:
+    domain: imaging
+    compliance: HIPAA
+
+global_env:
+  LOG_LEVEL: INFO
+
+steps:
+  - id: ingest
+    name: "Data Ingestion — pull studies from PACS"
+    image: myorg/pacs-ingestor:latest
+    node_selector: "zone=local"
+    outputs:
+      - name: studies
+        path: studies/
+        description: "Retrieved imaging studies in vendor-neutral format"
+    retry_count: 3
+    timeout_seconds: 7200
+
+  - id: preprocess
+    name: "Preprocessing — normalise and anonymise"
+    image: myorg/preprocessor:latest
+    node_selector: "zone=local"
+    depends_on: [ingest]
+    inputs:
+      - name: studies
+        path: studies/
+    outputs:
+      - name: tensors
+        path: tensors/
+        description: "Normalised pixel arrays, PHI stripped"
+    retry_count: 2
+    timeout_seconds: 3600
+
+  - id: inference
+    name: "AI Inference — pathology detection"
+    image: myorg/inference-gpu:latest
+    node_selector: "gpu=true"
+    depends_on: [preprocess]
+    inputs:
+      - name: tensors
+        path: tensors/
+    outputs:
+      - name: predictions
+        path: predictions/
+    env:
+      USE_GPU: "true"
+      BATCH_SIZE: "32"
+    retry_count: 2
+    timeout_seconds: 7200
+
+  - id: report
+    name: "Report Generation — structured findings"
+    image: myorg/reporter:latest
+    node_selector: "zone=local"
+    depends_on: [inference]
+    inputs:
+      - name: predictions
+        path: predictions/
+    outputs:
+      - name: reports
+        path: reports/
+    retry_count: 1
+
+transfers:
+  - from_step: ingest
+    from_port: studies
+    to_step: preprocess
+    to_port: studies
+    protocol: local       # same node
+
+  - from_step: preprocess
+    from_port: tensors
+    to_step: inference
+    to_port: tensors
+    protocol: ssh         # preprocess (local) → inference (GPU edge node)
+
+  - from_step: inference
+    from_port: predictions
+    to_step: report
+    to_port: predictions
+    protocol: ssh

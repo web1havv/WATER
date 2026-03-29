@@ -1,0 +1,123 @@
+# WATER Workflow: Federated ML Training Across Hospital Nodes
+#
+# Demonstrates the "cluster farm / east-west communication" architecture
+# the mentor described — multiple hospital nodes each train locally on
+# their private data, then a central aggregator merges the model weights.
+# No patient data ever crosses a hospital boundary.
+#
+# This is only possible because WATER enforces privacy: strict-local
+# as a hard disqualifier on the training steps, while the aggregation
+# step runs on a neutral coordinator node.
+
+name: federated-ml-training
+version: "1.0"
+description: >
+  Federated learning across three hospital nodes.
+  Each site trains on local data (strict-local privacy).
+  A coordinator aggregates model weights without seeing raw data.
+  Demonstrates east/west inter-domain workflow execution in WATER.
+
+intent:
+  privacy: strict-local    # training steps hard-pinned to local zones
+  latency: batch
+  compute: gpu-required
+  tags:
+    domain: federated-learning
+    model: chest-xray-classifier
+    round: "1"
+
+steps:
+  - id: train-site-a
+    name: "Local Training — Hospital Site A"
+    image: myorg/fl-trainer:latest
+    node_selector: "site=hospital-a"
+    inputs:
+      - name: local_data
+        path: data/site_a/
+    outputs:
+      - name: model_weights
+        path: weights/site_a_round1.pt
+    env:
+      SITE_ID: "site-a"
+      EPOCHS: "5"
+      USE_GPU: "true"
+    retry_count: 2
+    timeout_seconds: 10800
+
+  - id: train-site-b
+    name: "Local Training — Hospital Site B"
+    image: myorg/fl-trainer:latest
+    node_selector: "site=hospital-b"
+    inputs:
+      - name: local_data
+        path: data/site_b/
+    outputs:
+      - name: model_weights
+        path: weights/site_b_round1.pt
+    env:
+      SITE_ID: "site-b"
+      EPOCHS: "5"
+      USE_GPU: "true"
+    retry_count: 2
+    timeout_seconds: 10800
+
+  - id: train-site-c
+    name: "Local Training — Hospital Site C (Remote Alaska)"
+    image: myorg/fl-trainer:latest
+    node_selector: "site=hospital-c"
+    inputs:
+      - name: local_data
+        path: data/site_c/
+    outputs:
+      - name: model_weights
+        path: weights/site_c_round1.pt
+    env:
+      SITE_ID: "site-c"
+      EPOCHS: "5"
+      USE_GPU: "true"
+    retry_count: 3           # extra retry for remote site with satellite link
+    timeout_seconds: 14400
+
+  - id: aggregate
+    name: "Federated Aggregation — FedAvg weight merging"
+    image: myorg/fl-aggregator:latest
+    node_selector: "role=coordinator"
+    depends_on:
+      - train-site-a
+      - train-site-b
+      - train-site-c
+    inputs:
+      - name: weights_a
+        path: weights/site_a_round1.pt
+      - name: weights_b
+        path: weights/site_b_round1.pt
+      - name: weights_c
+        path: weights/site_c_round1.pt
+    outputs:
+      - name: global_model
+        path: model/global_round1.pt
+    env:
+      AGGREGATION: "fedavg"
+    retry_count: 1
+
+# Transfers: only model WEIGHTS move across sites — never raw patient data.
+# WATER enforces this by keeping training steps on strict-local nodes.
+
+transfers:
+  - from_step: train-site-a
+    from_port: model_weights
+    to_step: aggregate
+    to_port: weights_a
+    protocol: ssh
+
+  - from_step: train-site-b
+    from_port: model_weights
+    to_step: aggregate
+    to_port: weights_b
+    protocol: ssh
+
+  - from_step: train-site-c
+    from_port: model_weights
+    to_step: aggregate
+    to_port: weights_c
+    protocol: ssh    # satellite/WAN link — rsync with retry on the engine side

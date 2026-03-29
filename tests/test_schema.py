@@ -6,8 +6,9 @@ import pytest
 from pydantic import ValidationError
 
 from water.schema.workflow import (
-    DataPort, DataTransfer, StepStatus, TransferProtocol,
-    WaterWorkflow, WorkflowStep,
+    ComputeProfile, DataPort, DataTransfer, LatencyProfile,
+    PrivacyLevel, StepStatus, TransferProtocol,
+    WaterWorkflow, WorkflowIntent, WorkflowStep,
 )
 
 
@@ -107,6 +108,42 @@ class TestWaterWorkflow:
             global_env={"LOG_LEVEL": "INFO"},
         )
         assert wf.global_env["LOG_LEVEL"] == "INFO"
+
+
+class TestWorkflowIntent:
+    def test_defaults(self):
+        intent = WorkflowIntent()
+        assert intent.privacy == PrivacyLevel.PUBLIC
+        assert intent.latency == LatencyProfile.BATCH
+        assert intent.compute == ComputeProfile.CPU_LIGHT
+        assert intent.tags == {}
+
+    def test_strict_local(self):
+        intent = WorkflowIntent(privacy=PrivacyLevel.STRICT_LOCAL)
+        assert intent.privacy == PrivacyLevel.STRICT_LOCAL
+
+    def test_tags_stored(self):
+        intent = WorkflowIntent(tags={"region": "alaska", "project": "radiology-ai"})
+        assert intent.tags["region"] == "alaska"
+
+    def test_workflow_intent_embedded(self):
+        wf = WaterWorkflow(
+            name="privacy-test",
+            intent=WorkflowIntent(
+                privacy=PrivacyLevel.STRICT_LOCAL,
+                compute=ComputeProfile.GPU_REQUIRED,
+            ),
+            steps=[WorkflowStep(id="s1", name="s1", image="myorg/img:latest")],
+        )
+        assert wf.intent.privacy == PrivacyLevel.STRICT_LOCAL
+        assert wf.intent.compute == ComputeProfile.GPU_REQUIRED
+
+    def test_workflow_default_intent_is_public(self):
+        wf = WaterWorkflow(
+            name="default-intent",
+            steps=[WorkflowStep(id="s1", name="s1", image="myorg/img:latest")],
+        )
+        assert wf.intent.privacy == PrivacyLevel.PUBLIC
 
 
 class TestDataTransfer:

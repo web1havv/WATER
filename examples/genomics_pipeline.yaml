@@ -1,0 +1,102 @@
+# WATER Workflow: Genomics Variant Calling Pipeline
+#
+# Demonstrates WATER's platform-agnostic execution on a completely
+# different domain — genomics.  The same scheduler, executor, and
+# data-transfer layer that handles imaging pipelines handles this
+# without a single line of domain-specific code in WATER itself.
+#
+# Intent:
+#   - Research data; can offload heavy compute to cloud (public privacy)
+#   - Alignment and variant-calling are CPU/memory heavy
+#   - Annotation benefits from a cloud node with large reference databases
+
+name: genomics-variant-calling
+version: "1.0"
+description: >
+  WES/WGS variant calling: QC → alignment → variant-calling → annotation.
+  Heavy compute steps routed to cloud; results aggregated locally.
+  Shows WATER handling a non-imaging healthcare workflow identically.
+
+intent:
+  privacy: public          # de-identified research cohort — cloud eligible
+  latency: batch
+  compute: cpu-heavy
+  tags:
+    domain: genomics
+    pipeline: WES
+
+steps:
+  - id: qc
+    name: "Quality Control — FastQC + trimming"
+    image: biocontainers/fastqc:latest
+    node_selector: "type=edge"
+    inputs:
+      - name: raw_reads
+        path: fastq/
+    outputs:
+      - name: trimmed_reads
+        path: trimmed/
+    retry_count: 2
+
+  - id: alignment
+    name: "Read Alignment — BWA-MEM2"
+    image: biocontainers/bwa-mem2:latest
+    node_selector: "type=cloud"
+    depends_on: [qc]
+    inputs:
+      - name: trimmed_reads
+        path: trimmed/
+    outputs:
+      - name: aligned_bam
+        path: aligned/sample.bam
+    env:
+      REFERENCE: /ref/hg38.fa
+      THREADS: "16"
+    retry_count: 2
+    timeout_seconds: 14400
+
+  - id: variant-calling
+    name: "Variant Calling — GATK HaplotypeCaller"
+    image: broadinstitute/gatk:latest
+    node_selector: "type=cloud"
+    depends_on: [alignment]
+    inputs:
+      - name: aligned_bam
+        path: aligned/sample.bam
+    outputs:
+      - name: raw_vcf
+        path: vcf/raw.vcf.gz
+    retry_count: 2
+    timeout_seconds: 18000
+
+  - id: annotation
+    name: "Variant Annotation — Ensembl VEP"
+    image: ensemblorg/ensembl-vep:latest
+    node_selector: "type=cloud"
+    depends_on: [variant-calling]
+    inputs:
+      - name: raw_vcf
+        path: vcf/raw.vcf.gz
+    outputs:
+      - name: annotated_vcf
+        path: vcf/annotated.vcf.gz
+    retry_count: 1
+
+transfers:
+  - from_step: qc
+    from_port: trimmed_reads
+    to_step: alignment
+    to_port: trimmed_reads
+    protocol: ssh
+
+  - from_step: alignment
+    from_port: aligned_bam
+    to_step: variant-calling
+    to_port: aligned_bam
+    protocol: local         # both on cloud — same node or NFS
+
+  - from_step: variant-calling
+    from_port: raw_vcf
+    to_step: annotation
+    to_port: raw_vcf
+    protocol: local
