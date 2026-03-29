@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "water-workflow"
+version = "0.1.0"
+description = "WATER: Workflow Allocation Towards Edge Resources — distribute healthcare pipelines across edge and cloud nodes"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.10"
+keywords = ["healthcare", "DICOM", "edge-computing", "workflow", "distributed", "Niffler", "CONTROL-CORE"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Medical Science Apps.",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+    "pydantic>=2.0",
+    "pyyaml>=6.0",
+    "fastapi>=0.100",
+    "uvicorn[standard]>=0.23",
+    "pyzmq>=25.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "httpx>=0.24",
+]
+
+[project.scripts]
+water = "water.cli:main"
+
+[project.urls]
+"Homepage" = "https://github.com/healthyinc/WATER"
+"Bug Tracker" = "https://github.com/healthyinc/WATER/issues"
+"Discussion" = "https://github.com/healthyinc/WATER/discussions"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["water*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]

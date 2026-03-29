@@ -1,0 +1,120 @@
+# WATER Workflow: Niffler DICOM Processing Pipeline
+# Demonstrates distributing the Niffler pipeline across edge nodes
+#
+# Architecture:
+#   cold-extraction -> modality-grouping -> png-extraction -> meta-extraction
+#
+# Node assignment:
+#   edge-pacs   : Network-adjacent to PACS (cold-extraction, low CPU)
+#   edge-gpu    : GPU-enabled node (png-extraction, CPU/GPU heavy)
+#   cloud-mongo : Cloud node with MongoDB (meta-extraction, I/O heavy)
+
+name: niffler-dicom-pipeline
+version: "1.0"
+description: >
+  Distributes the Niffler DICOM workflow across heterogeneous edge and cloud
+  nodes. cold-extraction runs on the PACS-adjacent node; PNG conversion on
+  the GPU node; metadata indexing on the cloud node.
+
+global_env:
+  NIFFLER_LOG_LEVEL: INFO
+  SEND_EMAIL: "false"
+
+steps:
+  - id: cold-extraction
+    name: "DICOM Cold Extraction (C-MOVE from PACS)"
+    image: niffler/cold-extraction:latest
+    node_selector: "role=pacs-gateway"
+    inputs:
+      - name: csv_input
+        path: csv/patients.csv
+        description: "CSV with PatientID, AccessionNumber, StudyDate"
+    outputs:
+      - name: dicom_files
+        path: cold_extraction/
+        description: "Retrieved DICOM files in PatientID/StudyUID/SeriesUID/ hierarchy"
+    env:
+      STORAGE_FOLDER: /out/cold_extraction
+      CSV_FILE: /in/csv/patients.csv
+      NIGHTLY_ONLY: "false"
+    retry_count: 3
+    timeout_seconds: 7200
+
+  - id: modality-grouping
+    name: "Sort DICOM by Modality (CT, MRI, etc.)"
+    image: niffler/workflows:latest
+    node_selector: "role=pacs-gateway"
+    depends_on:
+      - cold-extraction
+    inputs:
+      - name: dicom_files
+        path: cold_extraction/
+    outputs:
+      - name: sorted_dicoms
+        path: modality_grouping/
+        description: "DICOMs organized by modality: CT/, MRI/, CR/, etc."
+    env:
+      COLD_EXTRACTION_PATH: /in/cold_extraction
+      MODALITY_SPLIT_PATH: /out/modality_grouping
+    retry_count: 1
+
+  - id: png-extraction
+    name: "Convert DICOM to PNG + Extract Metadata CSV"
+    image: niffler/png-extraction:latest
+    node_selector: "role=gpu-worker"
+    depends_on:
+      - modality-grouping
+    inputs:
+      - name: sorted_dicoms
+        path: modality_grouping/CT/
+        description: "CT DICOMs ready for PNG conversion"
+    outputs:
+      - name: png_images
+        path: png_output/extracted-images/
+      - name: metadata_csv
+        path: png_output/metadata.csv
+    env:
+      DICOM_HOME: /in/modality_grouping/CT
+      OUTPUT_DIRECTORY: /out/png_output
+      DEPTH: "3"
+      PRINT_IMAGES: "true"
+      USE_GPU: "true"
+      SPLIT_INTO_CHUNKS: "4"
+    retry_count: 2
+    timeout_seconds: 14400
+
+  - id: meta-extraction
+    name: "Real-time Metadata Indexing into MongoDB"
+    image: niffler/meta-extraction:latest
+    node_selector: "role=cloud-indexer"
+    depends_on:
+      - png-extraction
+    inputs:
+      - name: metadata_csv
+        path: png_output/metadata.csv
+    outputs:
+      - name: mongo_confirmation
+        path: meta_extraction/done.txt
+    env:
+      MONGO_URI: mongodb://localhost:27017/niffler
+      FEATURES_FOLDER: /src/conf
+    retry_count: 2
+
+transfers:
+  - from_step: cold-extraction
+    from_port: dicom_files
+    to_step: modality-grouping
+    to_port: dicom_files
+    protocol: local
+
+  - from_step: modality-grouping
+    from_port: sorted_dicoms
+    to_step: png-extraction
+    to_port: sorted_dicoms
+    protocol: ssh
+
+  - from_step: png-extraction
+    from_port: metadata_csv
+    to_step: meta-extraction
+    to_port: metadata_csv
+    protocol: ssh
